@@ -28,6 +28,25 @@ knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
 
 
 ```{r globals, include=FALSE}
+# 11 states with diverse economies and tax structures
+sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
+state.name[match(sts, state.abb)]
+stus <- c("US", sts)
+
+njcomps <- c("CT", "DE", "MD", "NY", "PA")
+
+ilcomps <- c("IL", "US", "IN", "IA", "KY", "MI", "MO", "WI")
+
+recession_start <- as.Date("2007-12-01")
+recession_end <- as.Date("2009-06-01")
+
+# colors lighter to darker
+# #fee0d2 #fc9272 #de2d26
+red2 <- c("#fee0d2", "#de2d26")
+# #deebf7 #9ecae1 #3182bd
+blue2 <- c("#deebf7", "#3182bd")
+# #e5f5e0 #a1d99b #31a354
+green2 <- c("#e5f5e0", "#31a354")
 
 ```
 
@@ -74,7 +93,8 @@ library("gridExtra")
 
 ```
 
-```{r}
+
+```{r functions}
 ma_db <- function(x, period) {
   # create trailing moving average of x of length period
   zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
@@ -101,70 +121,43 @@ theme_map <- function(base_size=9, base_family="") {
           panel.grid=element_blank(),
           panel.spacing=unit(0, "lines"),
           plot.background=element_blank(),
-          legend.justification = c(0,0),
-          legend.position = c(0,0)
+          legend.justification = c(0, 0),
+          legend.position = c(0, 0)
     )
 }
 
-get_mdata <- function(df){
-  # df must have a column named stabbr; we will rename to abbr
-  mdata <- left_join(usmap::us_map() %>% arrange(full, piece, order), 
-                     df %>% rename(abbr=stabbr),
-                     by="abbr")
-  return(mdata)
-}
 
-get_stateplot <- function(df, fillvar){
-  # data is a data frame
-  # fillvar is a character value with the name of the variable that will determine the fill color
-  mdata <- get_mdata(df)
+statemap <- function(mapdf, mapvar, cutpts, cutlabels, map_colors, map_title, legend_title){
+  mapdf <- mapdf %>%
+    rename(mapvalue=mapvar) %>%
+    mutate(data_group=cut(mapvalue, cutpts, labels=cutlabels),
+           mapvarname=mapvar) %>%
+    select(stabbr, mapvarname, mapvalue, data_group)
   
-  p <- ggplot(data = mdata, aes(x = x, y = y, group = group)) +
-    geom_polygon(aes(fill=mdata[[fillvar]]), color = "gray90", size = 0.1, na.rm=TRUE) +
+  mdata <- left_join(
+    usmap::us_map() %>% arrange(full, piece, order), 
+    mapdf %>% rename(abbr=stabbr),
+    by="abbr")
+  
+  p <- mdata %>%
+    ggplot(aes(x = x, y = y)) +
+    geom_polygon(aes(fill=data_group, group = group),
+               color = "gray90", size = 0.1) +
+    scale_fill_manual(values=map_colors, drop=TRUE, na.translate=FALSE) + # na.translate drops NA from the legend
     coord_equal() + 
+    guides(fill=guide_legend(title=legend_title)) +
+    ggtitle(map_title) +
+    geom_text(data = bdata::statemap_labels %>% filter(stabbr != "DC"), aes(x, y, label = stabbr), size = 3) +
     theme_map() +
-    theme(legend.position = "right")
+    theme(legend.position = "right") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  #   labs(caption=capt) +
+  #   theme(plot.caption = element_text(hjust=0, size=8))
   return(p)
 }
 
-
 ```
-
-
-```{r ufl_map, eval=FALSE}
-yrs <- c(2000, 2005, 2010, 2018)
-pdat <- pctgdp_wide %>% 
-  filter(stabbr %in% c("DC", state.abb), year %in% yrs) %>%
-  select(year, stabbr, claims) %>%
-  mutate(grp=cut(claims, breaks=c(-Inf, 5, 15, 25, Inf)), cutlabs=grp)
-
-pdat %>%
-  group_by(year, grp) %>%
-  summarise(n=n()) %>%
-  spread(year, n)
-
-capt <- str_wrap(paste0("Source: Author's analysis of BEA state pension estimates "), 90)
-
-colors <- c('#31a354','#f0f9e8','#feb24c','#f03b20')
-p <- get_stateplot(pdat, "grp") + 
-  scale_fill_manual(values=colors, drop=FALSE)+
-  theme(legend.position = "right") +
-  guides(fill=guide_legend(title="% of GDP")) +
-  geom_polygon(color = "black", fill=NA) +
-  facet_wrap(~year, ncol=2, dir="h") +
-  ggtitle("Unfunded liabilities as percent of GDP") +
-  theme(plot.title = element_text(size = 12, face = "bold"),
-        strip.background = element_rect(colour="lightgrey", fill=NA),
-        strip.text = element_text(size = 10, face="bold")) +
-  labs(caption=capt) +
-  theme(plot.caption = element_text(hjust=0, size=8))
-p
- +
-  scale_fill_discrete(na.translate=FALSE)
-# ggsave(here::here("results", "ufl_map.png"), p, width=10, height=5, units="in", scale=1)
-
-```
-
 
 
 # Introduction
@@ -177,7 +170,7 @@ Goals:
 * Robust, accurate, and timely data sources
 
 # Data preparation
-```{r ONETIME, eval=FALSE}
+```{r ONETIME_gdppi, eval=FALSE}
 gdppi.q <- getSymbols("GDPCTPI", src="FRED", auto.assign=FALSE) %>%
   tk_tbl(rename_index = "date")
 gdppi.q %>% ht
@@ -233,7 +226,8 @@ rqtax <- qtax %>%
   select(stabbr, date, tax=value) %>%
   left_join(gdppiq, by="date") %>%
   left_join(sgdpq2, by = c("stabbr", "date")) %>%
-  mutate(rtax=tax * gdppiq$gdppi[gdppiq$date==latestq] / gdppi,
+  mutate(tax=tax / 1000, # billions of dollars
+         rtax=tax * gdppiq$gdppi[gdppiq$date==latestq] / gdppi,
          rgdp=gdp * gdppiq$gdppi[gdppiq$date==latestq] / gdppi) %>%
   select(-gdppi)
 summary(rqtax) # only gdp and rgdp have NAs
@@ -288,25 +282,34 @@ saveRDS(rsltax, here::here("data", "rsltax.rds"))
 
 # Revenue growth measures
 ```{r get_rqtax}
+# keep all states in the data until we get to graphing
+
 rqtax <- readRDS(here::here("data", "rqtax.rds"))
 
 df <- rqtax %>%
   group_by(stabbr) %>%
   arrange(date) %>%
   mutate(rtaxma=ma_db(rtax, 4),
-         rtaxma_pchya=rtaxma / lag(rtaxma, 4) * 100 - 100) %>%
+         rtaxma_pchya=rtaxma / lag(rtaxma, 4) * 100 - 100,
+         rgdpma=ma_db(rgdp, 4)) %>%
   filter(year(date) >= 1980) %>%
   ungroup
 
 glimpse(df)
 
-# 11 states with diverse economies and tax structures
-sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
-state.name[match(sts, state.abb)]
-stus <- c("US", sts)
-
-recession_start <- as.Date("2007-12-01")
-recession_end <- as.Date("2009-06-01")
+# function to smooth and index based on a given period
+si <- function(df, start){
+  df2 <- df %>%
+    filter(date >= start) %>%
+    group_by(stabbr) %>%
+    arrange(date) %>%
+    mutate(rn=row_number(),
+           rtaxma_fit=loess(rtaxma ~ rn)$fitted,
+           pd_rtfit=rtaxma_fit / rtaxma_fit[date==start] * 100 - 100,
+           pd_rtma=rtaxma / rtaxma[date==start] * 100 - 100) %>%
+    ungroup
+  df2
+}
 
 ```
 
@@ -315,18 +318,10 @@ recession_end <- as.Date("2009-06-01")
 ## How the level of taxation has changed
 ### The level
 ```{r altlevel}
-pdata <- df %>%
-  filter(year(date) >= 2000,
-         stabbr %in% stus) %>%
-  mutate(rtaxma=rtaxma / 1000,
-         stabbr=factor(stabbr, levels=stus)) %>% # establish desired order
-  
-  # create smoother virtually (or actually) identical to stat_smooth
-  group_by(stabbr) %>%
-  arrange(date) %>%
-  mutate(rn=row_number(),
-         fit=loess(rtaxma ~ rn)$fitted) %>%
-  ungroup
+# smooth and index
+pdata <- si(df, "2000-01-01") %>%
+  filter(stabbr %in% stus) %>%
+  mutate(stabbr=factor(stabbr, levels=stus))
 
 p <- pdata %>%
   ggplot() +
@@ -336,7 +331,7 @@ p <- pdata %>%
             aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
             fill = "grey", alpha = 0.25) +
   stat_smooth(aes(date, rtaxma), method="loess", fill="lightblue") +
-  # geom_line(aes(date, fit), colour="red", size=1) +
+  # geom_line(aes(date, rtaxma_fit), colour="red", size=1) +
   facet_wrap(~stabbr, ncol=3, scales="free") +
   scale_y_continuous("Billions of 2019 $", labels=scales::comma) +
   scale_x_date(name=NULL) +
@@ -346,25 +341,145 @@ p <- pdata %>%
 p
 ggsave(here::here("results", "rqtax_v_trend.png"), plot=p, width=10, height=10, scale=1)  
 
+```
 
-# xvars <- c("time_ma", "dsrip_ma", "interaction_ma")
-# regressions_automa <- regdata %>%
-#   # additional filtering if desired:
-#   # filter(PPS_ID %in% (c(1:99)) %>%
-#   arrange(PPS_ID, MSR_RESULT_ID, time) %>%
-#   nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
-#     mutate(
-#     fit = map(data, ~ auto.arima(.$MSR_RESULT,
-#                                  xreg = as.matrix(.[, xvars]))),
-#     tidied = map(fit, tidy),
-#     glanced = map(fit, glance),
-#     ztest=map(fit, ztest, dgrf="nocalc"))
+
+### The level in a single state
+```{r}
+# single state graph
+# each state vs US
+idate <- "2010-01-01"
+pdata <- si(df, idate) %>%
+  # get the US value and fit
+  select(stabbr, date, rtaxma, pd_rtma, rtaxma_fit, pd_rtfit) %>%
+  pivot_longer(c(rtaxma, pd_rtma, rtaxma_fit, pd_rtfit), names_to= "vname", values_to = "stvalue") %>%
+  group_by(date, vname) %>%
+  mutate(usvalue=stvalue[stabbr=="US"]) %>%
+  pivot_longer(c(stvalue, usvalue), names_to= "govt") %>%
+  ungroup
+
+pdata %>%
+  filter(vname=="pd_rtfit") %>%
+  filter(stabbr %in% stus) %>%
+  mutate(stabbr=factor(stabbr, levels=stus)) %>%
+  ggplot() +
+  geom_line(aes(date, value, colour=govt)) +
+  facet_wrap(~stabbr, ncol=3, scales="free") +
+  scale_x_date(name=NULL) +
+  theme_bw() +
+  ggtitle("Inflation-adjusted quarterly state tax revenue, 4-quarter moving average, % change vs. start date",
+          subtitle="State and US")
+
+sts <- c("NJ", njcomps)
+pdata %>%
+  filter(vname=="pd_rtma") %>%
+  filter(stabbr %in% sts, govt=="stvalue") %>%
+  mutate(stabbr=factor(stabbr, levels=sts)) %>% # to keep in desired order
+  ggplot() +
+  geom_line(aes(date, value, colour=stabbr)) +
+  geom_hline(yintercept = 0) + 
+  # scale_y_continuous("Billions of 2019 $", labels=scales::comma) +
+  scale_x_date(name=NULL) +
+  theme_bw() +
+  ggtitle("Inflation-adjusted quarterly state tax revenue, 4-quarter moving average, % change vs. start date",
+          subtitle="State and US")
+ 
+
+
+# New Jersey and nearby states graph 
+fnj <- function(idate){
+  sts <- c("NJ", "US", njcomps)
+  groupvals <- c("NJ", "comp", "US")
+  grouplabs <- c("New Jersey", "Nearby states", "United States")
+  pdata <- si(df, idate) %>%
+    # get the US value and fit
+    select(stabbr, date, pd_rtma) %>%
+    pivot_longer(c(pd_rtma), names_to= "vname", values_to = "stvalue") %>%
+    group_by(date, vname) %>%
+    mutate(usvalue=stvalue[stabbr=="US"]) %>%
+    pivot_longer(c(stvalue, usvalue), names_to= "govt") %>%
+    ungroup %>%
+    filter(vname=="pd_rtma") %>%
+    filter(stabbr %in% sts, govt=="stvalue") %>%
+    mutate(group=case_when(stabbr %in% c("NJ", "US") ~stabbr,
+                           stabbr %in% njcomps ~ "comp",
+                           TRUE ~ "other")) %>%
+    group_by(group, date) %>%
+    summarise(value=mean(value)) %>%
+    ungroup %>%
+    mutate(group=factor(group, levels=groupvals, labels=grouplabs))
+  pdata
+}
+
+idate <- "2010-01-01"
+p <- fnj(idate)  %>%
+  ggplot() +
+  geom_line(aes(date, value, colour=group)) +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept=as.Date(idate), linetype="dotted") +
+  scale_y_continuous("Percent change since start of period", breaks=seq(-20, 50, 5)) +
+  scale_x_date(name=NULL) +
+  scale_colour_manual(values=c("blue", "red", "black")) +
+  ggtitle("State tax revenue: New Jersey, average of nearby states, and the U.S.",
+          subtitle="% change from start in inflation-adjusted 4-quarter moving average") +
+  labs(caption="Nearby states: Connecticut, Delaware, Maryland, New York & Pennsylvania") +
+  theme_bw() +
+  theme(legend.title = element_blank()) +
+  theme(plot.caption = element_text(hjust=0, size=rel(.8)))
+p
+ggsave(here::here("results", "njrqtaxma_v_nearby.png"), plot=p, width=10, height=6, scale=1)   
+
+# individual states
+sts <- c("NJ", njcomps)
+pdata <- si(df, idate) %>%
+  filter(stabbr %in% sts) %>%
+  select(stabbr, date, pd_rtma)
+
+clrs <- c('red', '#4daf4a', '#984ea3', 'blue', '#ff7f00', 'black')
+p <- pdata %>%
+  ggplot() +
+  geom_line(aes(date, pd_rtma, colour=stabbr, size=stabbr)) +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept=as.Date(idate), linetype="dotted") +
+  scale_y_continuous("Percent change since start of period", breaks=seq(-20, 50, 5)) +
+  scale_x_date(name=NULL) +
+  scale_colour_manual(values=clrs) +
+  scale_size_manual(values=c(1, 1, 1, 2, 1, 1)*.8) +
+  ggtitle("State tax revenue: New Jersey and nearby states",
+          subtitle="% change from start in inflation-adjusted 4-quarter moving average") +
+  theme_bw() +
+  theme(legend.title = element_blank()) +
+  theme(plot.caption = element_text(hjust=0, size=rel(.8)))
+p
+ggsave(here::here("results", "njrqtaxma_v_nearby_idiv.png"), plot=p, width=10, height=6, scale=1) 
+
+
+idate <- "2010-01-01"
+md <- si(df, idate) %>%
+  filter(stabbr != "US", date==max(date)) %>%
+  select(stabbr, pd_rtma)
+quantile(md$pd_rtma)
+cutpoints <- c(-Inf, 0, 20, 30, 40, Inf)
+cutvals <- cut(md$pd_rtma, cutpoints, right=FALSE)
+table(cutvals) %>% as.data.frame()
+cutlabs <- c("< 0", "0 to < 20", "20 to < 30", "30 to < 40", "40+")
+cbind(cutlabs, table(cutvals) %>% as.data.frame())
+
+clrs <- c(red2 %>% rev, "lightgrey", blue2)
+
+p <- statemap(mapdf=md, mapvar="pd_rtma", 
+         cutpts=cutpoints, cutlabels=cutlabs, map_colors=clrs,
+         map_title="% change in inflation-adjusted tax revenue from 2010 to most recent quarter",
+         legend_title="% change")
+p
+ggsave(here::here("results", "rqtax_v_2010_map.png"), plot=p, width=16, height=9, scale=.7)  
 
 ```
 
 
-### Percent above or below trend
-```{r}
+### Map of level - percent above or below trend
+
+```{r map1_pdiff, fig.height=9 fig.width=16}
 # map all states
 pdata <- df %>%
   filter(year(date) >= 2000) %>%
@@ -382,70 +497,25 @@ quantile(pdata$pdiff)
 
 cutpts <- c(-Inf, -3, -1, 1, 3, Inf)
 (pcuts <- cut(pdata$pdiff, cutpts))
-table(pcuts)
 levs <- levels(pcuts)
-labs <- c("3% or more below", "1% to 3% below",
+cutlabels <- c("3% or more below", "1% to 3% below",
           "within 1% of trend",
           "1% to 3% above", "3% or more above")
+map_title <- "States with tax revenue above or below longer-term trend"
+legend_title <- "% above or below trend"
 
-cbind(levs, labs)
+p <- statemap(mapdf=pdata, 
+              mapvar="pdiff", 
+              cutpts=cutpts, cutlabels=cutlabels, map_colors=c(red2 %>% rev, "#f0f0f0", green2),
+              map_title=map_title, legend_title=legend_title)
+p
 
-mdata <- get_mdata(pdata)
+ggsave(here::here("results", "rqtax_v_trend_map.png"), plot=p, width=16, height=9, scale=.7)  
 
-
-# capt <- str_wrap(paste0("Source: Author's analysis of BEA state pension estimates "), 90)
-
-
-# #fee0d2 #fc9272 #de2d26
-red2 <- c("#fee0d2", "#de2d26")
-# #deebf7 #9ecae1 #3182bd
-blue2 <- c("#deebf7", "#3182bd")
-# #e5f5e0 #a1d99b #31a354
-green2 <- c("#e5f5e0", "#31a354")
-
-colors <- c(red2 %>% rev, "#f0f0f0", blue2)
-colors <- c(red2 %>% rev, "#f0f0f0", green2)
-p <- mdata %>%
-  # ungroup %>%
-  # filter(!is.na(pdiff)) %>%
-  mutate(dgrp=cut(pdiff, cutpts, labels=labs)) %>%
-  # arrange(desc(dgrp)) %>%
-  # mutate(dgrp=fct_explicit_na(dgrp, na_level = "(Missing)")) %>%
-  ggplot(aes(x = x, y = y)) +
-  geom_polygon(aes(fill=dgrp, group = group),
-               color = "gray90", size = 0.1) +
-  scale_fill_manual(values=colors, drop=TRUE, na.translate=FALSE) +
-  coord_equal() + 
-  guides(fill=guide_legend(title="% above or below trend")) +
-  ggtitle("States with tax revenue above or below longer-term trend") +
-  # geom_text(data = stlabs, aes(x, y, label = abbr), size = 2.5) +
-  theme_map() +
-  theme(legend.position = "right") +
-  theme(plot.title = element_text(size = 12, face = "bold"))
-
-p1 <- p + geom_text(data = statemap_labels, aes(x, y, label = stabbr), size = 2)
-ggsave(here::here("results", "rqtax_v_trend_map.png"), plot=p1, width=10, height=10, scale=1)  
-
-
-# colors <- c('#31a354','#f0f9e8','#feb24c','#f03b20')
-# p <- get_stateplot(pdat, "grp") + 
-#   scale_fill_manual(values=colors, drop=FALSE)+
-#   theme(legend.position = "right") +
-#   guides(fill=guide_legend(title="% of GDP")) +
-#   geom_polygon(color = "black", fill=NA) +
-#   facet_wrap(~year, ncol=2, dir="h") +
-#   ggtitle("Unfunded liabilities as percent of GDP") +
-#   theme(plot.title = element_text(size = 12, face = "bold"),
-#         strip.background = element_rect(colour="lightgrey", fill=NA),
-#         strip.text = element_text(size = 10, face="bold")) +
-#   labs(caption=capt) +
-#   theme(plot.caption = element_text(hjust=0, size=8))
-# p
-  
 ```
 
 
-
+## Short-term growth
 ```{r altgrow}
 # shorter term growth measure
 p <- df %>%
@@ -480,41 +550,9 @@ ggsave(here::here("results", "rqtax_growth_v_trend.png"), plot=p, width=10, heig
 ```
 
 
-```{r}
-xtrap <- rqtax %>%
-  filter(vname=="tottax") %>%
-  select(stabbr, date, vname, value, rvalue, rpchya)
-
-xtrap3 <- xtrap %>%
-  group_by(stabbr, vname) %>%
-  arrange(date) %>%
-  mutate(rvalma=ma_db(rvalue, 4),
-         fitma=ma_db(rpchya, 4),
-         rvalmapchya=rvalma / lag(rvalma, 4) * 100 - 100) %>%
-  filter(year(date) >= 1980) %>%
-  mutate(rn=row_number(),
-         fit=loess(rvalmapchya ~ rn)$fitted)
-glimpse(xtrap3)
-
-```
 
 
 ```{r}
-xtrap3 %>%
-  select(stabbr, date, vname, state=rvalmapchya) %>%
-  filter(year(date) >= 2014) %>%
-  group_by(vname, date) %>%
-  mutate(us=state[stabbr=="US"]) %>%
-  pivot_longer(c(state, us)) %>%
-  filter(stabbr %in% c("CA", "NY", "NJ", "CT")) %>%
-  ggplot(aes(date, value, colour=name)) +
-  geom_line() +
-  geom_hline(yintercept = 0) +
-  facet_wrap(~stabbr, ncol=2) +
-  # scale_x_date(breaks="3 months") +
-  scale_y_continuous(breaks=seq(-20, 20, 2)) +
-  theme_bw()
-
 # break states into 3 groups: slower than US for last 4 quarters, faster, and neither
 pdata <- xtrap3 %>%
   select(stabbr, date, vname, state=rvalmapchya) %>%
@@ -559,30 +597,24 @@ pdata %>%
 
 ```
 
-## Revenue growth relative to economy
+
+## Revenue growth and economy
 ```{r}
-glimpse(qtaxgdp)
-df <- qtaxgdp %>%
-  group_by(stabbr) %>%
-  arrange(date) %>%
-  mutate(rgdp4=ma_db(rgdp, 4),
-         rtax4=ma_db(rvalue, 4)) %>%
-  ungroup
-ht(df)
+glimpse(df)
 
 # start <- "2010-01-01"
-start <- "2015-01-01"
-sts <- c("CA", "NY", "IL", "US")
-sts <- c("FL", "TX", "PA", "US")
-sts <- c("FL", "TX", "PA", "ME", "US")
-
-sts <- c("FL", "TX", "IL", "CA")
+start <- "2010-01-01"
+# sts <- c("CA", "NY", "IL", "US")
+# sts <- c("FL", "TX", "PA", "US")
+# sts <- c("FL", "TX", "PA", "ME", "US")
+# 
+# sts <- c("FL", "TX", "IL", "CA")
 df2 <- df %>%
   filter(date >= start) %>%
   group_by(stabbr) %>%
-  mutate(irgdp4=rgdp4 / rgdp4[date==start] * 100 - 100,
-         irtax4=rtax4 / rtax4[date==start] * 100 - 100,
-         diff=irtax4 - irgdp4) %>%
+  mutate(irgdpma=rgdpma / rgdpma[date==start] * 100 - 100,
+         irtaxma=rtaxma / rtaxma[date==start] * 100 - 100,
+         diff=irtaxma - irgdpma) %>%
   ungroup
 
 gaps <- df2 %>% filter(date==max(date)) %>% arrange(diff)
@@ -590,40 +622,145 @@ xstates <- c("AK", "DC", "US")
 top <- gaps %>% filter(!stabbr %in% xstates) %>% top_n(n=4, wt=diff) %>% arrange(-diff)
 bottom <- gaps %>% filter(!stabbr %in% xstates) %>% top_n(n=4, wt=-diff) %>% arrange(-diff)
 
-(sts <- c(top$stabbr, "US", bottom$stabbr))
+(sts2 <- c(top$stabbr, "US", bottom$stabbr))
 
-df2 %>% 
-  filter(stabbr %in% sts) %>%
-  select(stabbr, date, irgdp4, irtax4) %>%
-  pivot_longer(c(irgdp4, irtax4)) %>%
-  mutate(stabbr=factor(stabbr, levels=sts)) %>%
-  ggplot(aes(date, value, colour=name)) +
-  geom_line() +
-  geom_point() +
-  geom_hline(yintercept = 0) +
-  scale_y_continuous(breaks=seq(-50, 50, 10)) +
-  facet_wrap(~stabbr, ncol=3)
+# df2 %>% 
+#   filter(stabbr %in% sts) %>%
+#   select(stabbr, date, irgdpma, irtaxma) %>%
+#   pivot_longer(c(irgdpma, irtaxma)) %>%
+#   mutate(stabbr=factor(stabbr, levels=sts)) %>%
+#   ggplot(aes(date, value, colour=name)) +
+#   geom_line() +
+#   geom_point() +
+#   geom_hline(yintercept = 0) +
+#   scale_y_continuous(breaks=seq(-50, 50, 10)) +
+#   facet_wrap(~stabbr, ncol=3)
+# 
+# comps <- c("WI", "IA", "IN", "KY", "MO", "MI")
+# sts2 <- c("IL", "US", "IN", "IA", "KY", "MI", "MO", "WI")
+# df2 %>% 
+#   filter(stabbr %in% sts) %>%
+#   select(stabbr, date, irgdpma, irtaxma) %>%
+#   pivot_longer(c(irgdpma, irtaxma)) %>%
+#   mutate(stabbr=factor(stabbr, levels=sts)) %>%
+#   ggplot(aes(date, value, colour=name)) +
+#   geom_line() +
+#   geom_point() +
+#   geom_hline(yintercept = 0) +
+#   scale_y_continuous(breaks=seq(-50, 50, 10)) +
+#   facet_wrap(~stabbr, ncol=3)
 
-comps <- c("WI", "IA", "IN", "KY", "MO", "MI")
-sts <- c("IL", "US", "IN", "IA", "KY", "MI", "MO", "WI")
-df2 %>% 
-  filter(stabbr %in% sts) %>%
-  select(stabbr, date, irgdp4, irtax4) %>%
-  pivot_longer(c(irgdp4, irtax4)) %>%
-  mutate(stabbr=factor(stabbr, levels=sts)) %>%
-  ggplot(aes(date, value, colour=name)) +
-  geom_line() +
-  geom_point() +
+pdata <- df2 %>%
+  filter(stabbr %in% stus) %>%
+  select(stabbr, date, starts_with(("ir"))) %>%
+  pivot_longer(starts_with("ir")) %>%
+  mutate(stabbr=factor(stabbr, levels = stus))
+
+p <- pdata %>%
+  mutate(name=factor(name, 
+                     levels=c("irtaxma", "irgdpma"),
+                     labels=c("Tax revenue", "State GDP"))) %>%
+  ggplot() +
+  geom_line(aes(date, value, colour=name), size=1) +
   geom_hline(yintercept = 0) +
-  scale_y_continuous(breaks=seq(-50, 50, 10)) +
-  facet_wrap(~stabbr, ncol=3)
+  facet_wrap(~stabbr, ncol=3, scales="free") +
+  scale_y_continuous("Cumulative % change since 2010") + # , breaks=seq(-5, 30, 5) +
+  scale_x_date(name=NULL) +
+  ggtitle("State tax revenue and GDP growth since 2010",
+          subtitle="4-quarter moving average of inflation-adjusted values") +
+  theme_bw() +
+  theme(legend.position = "right") +
+  theme(plot.title = element_text(size = 14, face = "bold")) +
+  guides(colour=guide_legend(title=NULL))
+p
+ggsave(here::here("results", "rqtax_gdp.png"), plot=p, width=10, height=10, scale=1)  
 
 ```
 
 
 # Revenue burden measures
 ```{r}
+rsltax <- readRDS(here::here("data", "rsltax.rds"))
 glimpse(rsltax)
+
+pdata <- rsltax %>%
+  filter(stabbr %in% stus, year>=2000) %>%
+  mutate(stabbr=factor(stabbr, levels = stus)) %>%
+  select(stabbr, year, taxgdp)
+
+p <- pdata %>%
+  ggplot() +
+  geom_line(aes(year, taxgdp)) +
+  stat_smooth(aes(year, taxgdp), method="loess", fill="lightblue") +
+  # geom_line(aes(date, rtaxma_fit), colour="red", size=1) +
+  geom_rect(data = data.frame(xmin = 2007.75, xmax = 2009.5,
+                              ymin = -Inf, ymax = Inf),
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = "grey", alpha = 0.25) +
+  facet_wrap(~stabbr, ncol=3, scales="free") +
+  scale_y_continuous("State-local tax revenue as % of GDP") +
+  scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 5)) +
+  theme_bw() +
+  ggtitle("State-local tax revenue as % of GDP",
+          subtitle="Actual values and trend")
+p
+ggsave(here::here("results", "rsltax_gdp_trend.png"), plot=p, width=10, height=10, scale=1)  
+
+
+p <- pdata %>%
+  group_by(year) %>%
+  mutate(itaxgdp=taxgdp / taxgdp[stabbr=="US"] * 100 -100) %>%
+  ungroup %>%
+  filter(stabbr != "US") %>%
+  ggplot() +
+  geom_line(aes(year, itaxgdp)) +
+  stat_smooth(aes(year, itaxgdp), method="loess", fill="lightblue") +
+  geom_hline(yintercept = 0, colour="red") +
+  # geom_line(aes(date, rtaxma_fit), colour="red", size=1) +
+  geom_rect(data = data.frame(xmin = 2007.75, xmax = 2009.5,
+                              ymin = -Inf, ymax = Inf),
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = "grey", alpha = 0.25) +
+  facet_wrap(~stabbr, ncol=3, scales="free") +
+  scale_y_continuous("State-local tax revenue as % of GDP") +
+  scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 5)) +
+  theme_bw() +
+  ggtitle("State-local tax revenue as % of GDP, % above or below the US",
+          subtitle="Actual values and trend")
+p
+ggsave(here::here("results", "index_rsltax_gdp_trend.png"), plot=p, width=10, height=10, scale=1)  
+
+p <- rsltax %>%
+  filter(stabbr %in% stus) %>%
+  mutate(stabbr=factor(stabbr, levels = stus)) %>%
+  select(stabbr, year, taxgdp) %>%
+  group_by(year) %>%
+  mutate(itaxgdp=taxgdp / taxgdp[stabbr=="US"] * 100 -100) %>%
+  group_by(stabbr) %>%
+  arrange(year) %>%
+  mutate(itaxgdpma=ma_db(itaxgdp, 3)) %>%
+  ungroup %>%
+  filter(stabbr != "US", year>=2000) %>%
+  ggplot() +
+  geom_line(aes(year, itaxgdp)) +
+  geom_line(aes(year, itaxgdpma), colour="darkgreen", size=1) +
+  stat_smooth(aes(year, itaxgdp), method="loess", fill="lightblue") +
+  geom_hline(yintercept = 0, colour="red") +
+  # geom_line(aes(date, rtaxma_fit), colour="red", size=1) +
+  geom_rect(data = data.frame(xmin = 2007.75, xmax = 2009.5,
+                              ymin = -Inf, ymax = Inf),
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = "grey", alpha = 0.25) +
+  facet_wrap(~stabbr, ncol=3, scales="free") +
+  scale_y_continuous("State-local tax revenue as % of GDP") +
+  scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 5)) +
+  theme_bw() +
+  ggtitle("State-local tax revenue as % of GDP, % above or below the US",
+          subtitle="Actual values (black), trend (blue), and 3-year moving average (green)")
+p
+ggsave(here::here("results", "index_rsltax_gdp_trend_ma.png"), plot=p, width=10, height=10, scale=1)  
+
+
 
 ilsts <- c("IL", "WI", "IA", "IN", "KY", "MO")
 
@@ -659,7 +796,7 @@ rsltax %>%
   geom_line() +
   theme_bw()
 
-comps <- c("WI", "IA", "IN", "KY", "MO", "MI")
+ilcomps <- c("WI", "IA", "IN", "KY", "MO", "MI")
 rsltax %>%
   mutate(grp=case_when(stabbr=="IL" ~ "IL",
                        stabbr=="US" ~ "US",
