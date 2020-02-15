@@ -5,3 +5,6 @@
 *.png
 *.csv
 *.rds
+*.xls*
+*.pdf
+data/
