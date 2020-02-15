@@ -1,0 +1,385 @@
+---
+title: "Aging Indicator Analysis"
+author: "Don Boyd"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook:
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+always_allow_html: yes    
+    
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- comments -->
+
+# Notes: Code folding, etc.
+<!--
+# code folding ----
+#   alt-L, alt-shift-L  one section
+#   alt-O, alt-shift-O  all sections
+#   alt-R run current code section (remapped from Ctrl-alt-T)
+
+# ctrl-D run current chunk
+# ctrl-R run current selection
+-->
+
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r system_specific_values, include=FALSE}
+
+```
+
+```{r globals, include=FALSE}
+# 11 states with diverse economies and tax structures
+sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
+
+# colors lighter to darker
+# #fee0d2 #fc9272 #de2d26
+red2 <- c("#fee0d2", "#de2d26")
+# #deebf7 #9ecae1 #3182bd
+blue2 <- c("#deebf7", "#3182bd")
+# #e5f5e0 #a1d99b #31a354
+green2 <- c("#e5f5e0", "#31a354")
+
+```
+
+```{r libraries, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("btools")
+library("bdata")
+library("BEAData")
+library("qtax")
+
+library("DT") # for datatable
+
+library("zoo") # for rollapply
+
+library("broom") # for automating the cleanup of complex output
+
+library("quantmod")
+library("forecast")
+library("tsoutliers")
+library("timetk")
+
+library("janitor")
+
+library("ggrepel")
+
+library("maps")
+library("usmap")
+library("gridExtra")
+
+```
+
+```{r functions, include=FALSE}
+ma_db <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+stname <- function(stabbr) {state.name[match(stabbr, state.abb)]}
+stname(sts) # sts defined above
+
+get_stabbr <- function(x){bdata::stcodes$stabbr[match(x, bdata::stcodes$stfips)]}
+
+```
+
+```{r map_setup, include=FALSE}
+#.. Functions
+theme_map <- function(base_size=9, base_family="") {
+  # see:
+  # https://socviz.co/maps.html
+  # https://github.com/kjhealy/socviz
+  # https://cran.r-project.org/web/packages/usmap/vignettes/mapping.html
+  require(grid)
+  theme_bw(base_size=base_size, base_family=base_family) %+replace%
+    theme(axis.line=element_blank(),
+          axis.text=element_blank(),
+          axis.ticks=element_blank(),
+          axis.title=element_blank(),
+          panel.background=element_blank(),
+          panel.border=element_blank(),
+          panel.grid=element_blank(),
+          panel.spacing=unit(0, "lines"),
+          plot.background=element_blank(),
+          legend.justification = c(0, 0),
+          legend.position = c(0, 0)
+    )
+}
+
+
+statemap <- function(mapdf, mapvar, cutpts, cutlabels, map_colors, map_title, legend_title){
+  mapdf <- mapdf %>%
+    rename(mapvalue=mapvar) %>%
+    mutate(data_group=cut(mapvalue, cutpts, labels=cutlabels),
+           mapvarname=mapvar) %>%
+    select(stabbr, mapvarname, mapvalue, data_group)
+  
+  mdata <- left_join(
+    usmap::us_map() %>% arrange(full, piece, order), 
+    mapdf %>% rename(abbr=stabbr),
+    by="abbr")
+  
+  p <- mdata %>%
+    ggplot(aes(x = x, y = y)) +
+    geom_polygon(aes(fill=data_group, group = group),
+               color = "gray90", size = 0.1) +
+    scale_fill_manual(values=map_colors, drop=TRUE, na.translate=FALSE) + # na.translate drops NA from the legend
+    coord_equal() + 
+    guides(fill=guide_legend(title=legend_title)) +
+    ggtitle(map_title) +
+    geom_text(data = bdata::statemap_labels %>% filter(stabbr != "DC"), aes(x, y, label = stabbr), size = 3) +
+    theme_map() +
+    theme(legend.position = "right") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+  
+  #   labs(caption=capt) +
+  #   theme(plot.caption = element_text(hjust=0, size=8))
+  return(p)
+}
+
+```
+
+
+# Introduction
+Goals for the indicator:
+
+* Measure selected fiscal and/or economic effects related to changes in the age structure of states' populations
+* Help policymakers understand how these demographic changes will affect states' fiscal health
+* Regularly updated
+* Can be fiscal or demographic; but goal is to understand impacts on fiscal health
+
+Considerations:
+
+* Should it be fiscal or demographic?
+* What would an indicator concentrated on spending pressures look like?
+* Should the aging indicator present projections?
+* Is there a value to following PRC?? approach for the new indicator?  Would it even be possible to use Census data for state-level projections?
+* What are some common issues or pitfalls in aging-related research that we should think about as we develop this indicator?
+
+
+# Data preparation
+## ONETIME
+```{r ONETIME_pop_age}
+# https://factfinder.census.gov/bkmk/table/1.0/en/PEP/2018/PEPSYASEX?
+# https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/
+# PEP_2018_PEPSYASEX_with_ann.csv # annotations merged
+fn <- "PEP_2018_PEPSYASEX_with_ann.csv"
+vnames <- read_csv(here::here("data/popests/PEP_2018_PEPSYASEX/", fn), n_max = 0) %>% names
+df <- read_csv(here::here("data/popests/PEP_2018_PEPSYASEX/", fn), col_names = vnames, skip=2) # skip 2 so that we just read data
+ns(df) %>% ht
+df[1:4, 1:5]
+dim(df)
+
+# long file
+get_stabbr <- function(x){bdata::stcodes$stabbr[match(x, bdata::stcodes$stfips)]}
+# get_stabbr(c("01", "02", "36"))
+dfl <- df %>%
+  rename(stname=`GEO.display-label`,
+         stfips=GEO.id2) %>%
+  select(-GEO.id) %>%
+  pivot_longer(-c(stname, stfips)) %>%
+  mutate(stfips=ifelse(stname=="United States", "00", stfips),
+         stabbr=get_stabbr(stfips))
+glimpse(dfl)
+ht(dfl)
+count(dfl, stabbr, stname, stfips)
+
+# https://regexone.com/
+# regex101.com
+
+# dfl2 <- dfl %>%
+#   mutate(src=str_extract(name, "(?:(?!sex).)*"))
+#  mutate(src=str_split(name, "sex", simplify = TRUE)[, 1])
+
+dfl2 <- dfl  %>%
+  separate(col=name, into=c("src", "part2"), sep="(sex)", remove=FALSE) %>%
+  separate(col=part2, into=c("sex", "part3"), remove=FALSE) %>%
+  mutate(vtype=ifelse(part3 != "medage", "pop", "medage")) %>%
+  separate(col=part3, into=c("part4", "age"), sep="age", remove=FALSE) %>%
+  mutate(age=ifelse(age=="85plus", "85", age),
+         age=as.integer(age),
+         sex=as.integer(sex),
+         year=str_sub(src, -4, -1) %>% as.integer,
+         month=str_sub(src, -5, -5) %>% as.integer,
+         src=str_sub(src, 1, 3))
+
+glimpse(dfl2)
+ht(dfl2)
+count(dfl2, age) %>% ht # 85 is 85plus, 999 is total
+count(dfl2, sex) # 0 is total
+count(dfl2, year)
+count(dfl2, month)
+count(dfl2, src)
+count(dfl2, vtype)
+
+dfl3 <- dfl2 %>%
+  select(stabbr, src, year, month, vtype, sex, age, value)
+glimpse(dfl3)
+saveRDS(dfl3, file=here::here("data", "popagesex.rds"))
+
+```
+
+```{r ONETIME_USMDB_life}
+#.. USMDB documentation ----
+# The USMDB death rates and life tables have been computed as in the Human Mortality Database, following six steps, corresponding to each of six data types.
+# Here is an overview of the process:
+
+# Births. Annual counts of live births by sex have been collected for each population for all years since 1959. 
+#   These counts have been used mainly for making population estimates at younger ages.
+# Deaths. Death tabulations were built from the NCHS Mortality Files at the finest level of detail available and 
+#   uniform methods were implemented to estimate death counts by completed age (i.e., age-last-birthday at time of death), calendar year
+#   of death, and calendar year of birth.
+# Population size. July 1st annual estimates of population size were obtained from the US Census Bureau for years since 1970 and inter-censal
+#   population estimates were constructed for years 1959-1969 from a combination of US Census data, birth and death counts.
+# Exposure-to-risk. Estimates of the population exposed to the risk of death during each age-time interval were estimated
+#   from the annual population estimates, after correcting for the timing of deaths within each interval.
+# Death rates. Death rates were computed as the ratios of the death counts for a given age-time interval divided by the estimate
+#   of the exposure-to-risk in the same interval.
+# Life tables. Probabilities of death were computed from death rates and used to construct all other life table functions,
+#   including life expectancies and other useful indicators of mortality and longevity. 
+
+# The life tables include the following columns
+# Year     Calendar year or range of years of occurrence
+# Age      Age group for n-year interval from exact age x to just before exact age x+n
+# m(x)     Central death rate between age x and age x+n
+# q(x)     Probability of death between age x and age x+n
+# a(x)     Average length of survival between age x and age x+n for persons dying in the interval
+# l(x)     Number of survivors at exact age x, assuming l(0) = 100,000
+# d(x)     Number of deaths between age x and age x+n
+# L(x)     Number of person-years lived between age x and age x+n
+# T(x)     Number of person-years remaining after exact age x
+# e(x)     Life expectancy at exact age x (in years) = remaining length of life for survivors to age x
+
+
+
+#.. get USMDB ----
+ltdir <- here::here("data/lifetables/States")
+df <- list.files(path=ltdir, pattern="*_bltper_1x1.csv", full.names=TRUE, recursive=TRUE) %>% 
+  map_df(~read_csv(.))
+glimpse(df)
+# popname, sex, year, age, mx, qx, ax, lx, dx, Lx, Tx, ex
+
+df2 <- df %>%
+  rename(stabbr=PopName, sex=Sex, year=Year, age=Age) %>%
+  mutate(age=ifelse(age=="110+", "110", age),
+         age=as.integer(age))
+glimpse(df2)
+df2
+
+df2 %>%
+  filter(stabbr=="NY", year==2010, age<110) %>%
+  ggplot(aes(x=mx, y=qx)) + geom_point() +
+  geom_abline(slope=1)
+
+df2 %>%
+  filter(age==atage) %>%
+  filter(stabbr %in% sts) %>%
+  ggplot(aes(year, mx, colour=stabbr)) +
+  geom_line() +
+  geom_point() +
+  ggtitle(paste0("Death rate at age ", atage, ", selected states")) +
+  scale_x_continuous(name=NULL, breaks=seq(1950, 2030, 5)) +
+  scale_y_continuous(name="Death rate", breaks=seq(0, 0.1, .002)) +
+  theme_bw()
+
+saveRDS(df2, file=here::here("data", "usmdb.rds"))
+
+```
+
+
+## Get previously prepared data
+```{r}
+#.. Population ----
+pop <- readRDS(here::here("data", "popagesex.rds")) %>%
+  filter(vtype=="pop", src=="est", sex==0, month==7) %>%
+  select(stabbr, year, age, value)
+glimpse(pop)
+pop %>%
+  filter(stabbr=="NY", age==999)
+pop %>%
+  filter(stabbr=="NY", year==2010)
+```
+
+
+```{r usmdb}
+usmdb <- readRDS(file=here::here("data", "usmdb.rds"))
+
+# %>% filter(age==65)
+
+yrs <- c(2000, 2017)
+usmdb %>%
+  filter(age==65, year %in% yrs) %>%
+  select(stabbr, year, ex) %>%
+  pivot_wider(names_from = year, values_from = ex) %>%
+  # mutate(diff=`2017` - `1959`) %>%
+  mutate(diff=.[[3]] - .[[2]]) %>%
+  arrange(-diff)
+
+sts <- c("NY", "HI", "OK", "MS")
+atage <- 65
+usmdb %>%
+  filter(age==atage) %>%
+  filter(stabbr %in% sts) %>%
+  ggplot(aes(year, ex, colour=stabbr)) +
+  geom_line() +
+  geom_point() +
+  ggtitle(paste0("Life expectancy at age ", atage, ", selected states")) +
+  scale_x_continuous(name=NULL, breaks=seq(1950, 2030, 5)) +
+  scale_y_continuous(name="Life expectancy", breaks=seq(0, 30, 1)) +
+  theme_bw()
+
+```
+
+
+
+
+# OLD STUFF BELOW HERE
+## National data
+```{r census_us, include=FALSE}
+# projections
+# https://www.census.gov/data/datasets/2017/demo/popproj/2017-popproj.html
+
+# age sex race hisp origin
+# https://www2.census.gov/programs-surveys/popproj/datasets/2017/2017-popproj/np2017_d1.csv
+df <- read_csv("https://www2.census.gov/programs-surveys/popproj/datasets/2017/2017-popproj/np2017_d1.csv")
+glimpse(df)
+
+# births
+# https://www2.census.gov/programs-surveys/popproj/datasets/2017/2017-popproj/np2017_d2.csv
+
+# deaths
+# https://www2.census.gov/programs-surveys/popproj/datasets/2017/2017-popproj/np2017_d3.csv
+
+
+```
+
+## State data
+```{r census_state, include=FALSE}
+
+
+```
+
+
+
