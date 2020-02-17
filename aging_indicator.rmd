@@ -29,7 +29,7 @@ editor_options:
 
 # Setup
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE)
 ```
 
 ```{r system_specific_values, include=FALSE}
@@ -56,6 +56,7 @@ library("plyr") # needed for ldply; must be loaded BEFORE dplyr
 library("tidyverse")
 options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
 # ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+library("readxl")
 
 library("scales")
 library("hms") # hms, for times
@@ -66,8 +67,11 @@ library("grDevices")
 library("knitr")
 library("kableExtra")
 
+library("DBI")
+
 library("btools")
 library("bdata")
+
 library("BEAData")
 library("qtax")
 
@@ -177,6 +181,10 @@ Considerations:
 * Should the aging indicator present projections?
 * Is there a value to following PRC?? approach for the new indicator?  Would it even be possible to use Census data for state-level projections?
 * What are some common issues or pitfalls in aging-related research that we should think about as we develop this indicator?
+
+Barb asks:
+
+* Would changing size of prime-age workers by state over time get at effects of aging on a state's economic prospects?
 
 
 # Data preparation
@@ -308,9 +316,181 @@ saveRDS(df2, file=here::here("data", "usmdb.rds"))
 
 ```
 
+```{r ONETIME_ACS_disability}
+# ACS disability ----
+# https://www.census.gov/programs-surveys/acs/technical-documentation/pums/documentation.html
 
-## Get previously prepared data
-```{r}
+dbdir <- "D:/Data/CensusACS/RSQLite1YearDB/"
+dbf <- paste0(dbdir, "acs_1year.sqlite")
+
+con <- DBI::dbConnect(RSQLite::SQLite(), dbf)
+
+tname <- "p2018"
+
+dbListTables(con)
+dbListFields(con, tname)
+
+selstring <- paste0("SELECT * FROM ", tname, " LIMIT 5")
+tmp <- dbGetQuery(con, selstring)
+glimpse(tmp)
+
+selstring <- paste0("SELECT COUNT(*) FROM ", tname)
+dbGetQuery(con, selstring )
+
+# DIS Character 1
+# Disability recode
+# 1 .With a disability
+# 2 .Without a disability
+
+# institutionalized group quarters relp==16
+
+# vars <- c("st", "pwgtp", "agep", "dis")
+# vars <- expression(st, pwgtp, agep, dis)
+# bquote(st, pwgtp, agep, dis)
+# paste0("a", vars)
+
+(selstring <- paste0("SELECT ", vars, " FROM ", tname, " LIMIT 5"))
+(selstring <- paste0("SELECT st, pwgtp, agep, dis FROM ", tname, " LIMIT 5"))
+dbGetQuery(con, selstring )
+
+f <- function(year){
+  tname <- paste0("p", year)
+  # selstring <- paste0("SELECT st, pwgtp, agep, dis FROM ", tname, " LIMIT 5")
+  selstring <- paste0("SELECT st, pwgtp, agep, relp, dis FROM ", tname)
+  df <- dbGetQuery(con, selstring ) %>%
+    mutate(year=year)
+  return(df)
+}
+
+system.time(df <- ldply(2010:2018, f))
+glimpse(df)
+dbDisconnect(con)
+count(df, year)
+summary(df)
+
+a <- proc.time()
+df2 <- df %>%
+  mutate(agroup=case_when(agep < 21 ~ "young",
+                          agep >= 21 & agep < 65 ~ "workage",
+                          agep >= 65 ~ "old",
+                          TRUE ~ "error")) %>%
+  mutate(stabbr=stcodes$stabbr[match(st, as.integer(stcodes$stfips))],
+         igq=(relp==16)) %>%
+  group_by(year, stabbr, igq, agroup, dis) %>%
+  summarise(n=n(), pop=sum(pwgtp)) %>%
+  ungroup
+b <- proc.time()
+b - a
+glimpse(df2)
+saveRDS(df2, here::here("data", "age_disb.rds"))
+
+```
+
+```{r ONETIME_lf_age}
+#.. BLS Table 14 labor force by age ----
+# States:  Employment status of the civilian noninstitutional population by 
+#   sex, race, Hispanic or Latino ethnicity, marital status, and detailed age, 2003 annual averages
+# download here:  https://www.bls.gov/lau/ex14tables.htm
+
+f <- function(year){
+  vnames <- c("stfips", "group_code", "stname", "group", "civnipop", "civlf", "lfpct", "civemp", "emppct", "civunemp", "unemppct")
+  y2 <- str_sub(year, 3, 4)
+  df <- read_excel(here::here("data/bls", paste0("table14full", y2, ".xlsx")))
+  df <- df[-c(1:7), 1:11] %>%
+    setNames(vnames) %>%
+    mutate(year=year) %>%
+    filter(!is.na(stname))
+  df
+}
+
+df <- ldply(2003:2018, f)
+glimpse(df)
+
+count(df, year)
+count(df, stfips, stname) # 50 states plus DC
+count(df, group_code, group)
+
+df2 <- df %>%
+  filter(str_detect(group, "Total,")) %>%
+  mutate(stabbr=stcodes$stabbr[match(stfips, stcodes$stfips)]) %>%
+  select(year, stabbr, stname, group_code, group, civnipop, civlf, civemp, civunemp) %>%
+  mutate_at(vars(c(group_code, civnipop, civlf, civemp, civunemp)), ~as.numeric(.))
+
+glimpse(df2)
+ht(df2)
+count(df2, stabbr, stname)
+count(df2, group_code, group)
+saveRDS(df2, here::here("data", "lf_age.rds"))
+
+```
+
+
+```{r ONETIME_lf_total}
+# LAUS Local Area Unemployment Statistics ----
+# url <- "https://download.bls.gov/pub/time.series/la/la.data.3.AllStatesS" # SA state data
+# urlbase <- "https://download.bls.gov/pub/time.series/la/"
+fn <- "la.data.3.AllStatesS" # SA state data
+download.file(paste0(urlbase, fn), here::here("data/bls", fn), mode="wb")
+
+# measure_code	measure_text
+# 03	unemployment rate
+# 04	unemployment
+# 05	employment
+# 06	labor force
+
+area <- read_tsv("https://download.bls.gov/pub/time.series/la/la.area") %>%
+  filter(area_type_code=="A")
+area # 50 states DC PR
+
+df <- read_tsv(here::here("data/bls", fn))
+glimpse(df)
+# https://download.bls.gov/pub/time.series/la/la.area_type
+
+df2 <- df %>%
+  filter(str_sub(series_id, -2, -1)=="06") %>%
+  mutate(stfips=str_sub(series_id, 6, 7)) %>%
+  left_join(area %>% mutate(stfips=str_sub(area_code, 3, 4)) %>% select(stfips, stname=area_text), by = "stfips") %>%
+  mutate(stabbr=get_stabbr(stfips))
+ht(df2)
+count(df2, period)
+count(df2, stfips, stabbr, stname)
+df2 %>% filter(stabbr=="NY", year>=2016) # through Dec 2019 (preliminary)
+
+df3 <- df2 %>%
+  group_by(stabbr, year) %>%
+  summarise(lf=mean(value)) %>%
+  ungroup
+glimpse(df3)
+
+df3 %>%
+  filter(stabbr=="TN") %>%
+  ggplot(aes(year, lf)) +
+  geom_line() +
+  geom_point()
+
+summary(df3) # no NA values
+saveRDS(df3, here::here("data", "lf_total.rds"))
+
+# series_id                     	year	period	       value	footnote_codes
+# LASST010000000000003          	1976	M01	         6.7	
+
+# area_type_code	area_code	area_text	display_level	selectable	sort_sequence
+# A	ST0100000000000	Alabama	0	T	1
+# A	ST0200000000000	Alaska	0	T	146
+
+# footnote_code	footnote_text
+# A	Area boundaries do not reflect official OMB definitions.
+# N	Not available.
+# P	Preliminary.
+# V	The survey was not conducted due to bad weather. Interpolated data were seasonally adjusted.
+# W	The household survey was not conducted for this month due to bad weather. Data were interpolated.
+# Y	Data reflect controlling to interpolated statewide totals because the survey was not conducted.
+
+```
+
+
+# Get previously prepared data
+```{r pop}
 #.. Population ----
 pop <- readRDS(here::here("data", "popagesex.rds")) %>%
   filter(vtype=="pop", src=="est", sex==0, month==7) %>%
@@ -322,10 +502,9 @@ pop %>%
   filter(stabbr=="NY", year==2010)
 ```
 
-
 ```{r usmdb}
 usmdb <- readRDS(file=here::here("data", "usmdb.rds"))
-
+precis2(usmdb)
 # %>% filter(age==65)
 
 yrs <- c(2000, 2017)
@@ -352,6 +531,48 @@ usmdb %>%
 
 ```
 
+```{r acsdb}
+# ACS disability data
+acsdb <- readRDS(here::here("data", "age_disb.rds"))
+glimpse(acsdb)
+precis2(acsdb)
+# get total rates of disability
+# igq is institutionalized group quarters
+
+acsdb %>%
+  filter(!igq) %>%
+  group_by(year, stabbr) %>%
+  summarise(n=sum(n), disb_pop=sum(pop * (dis==1)), pop=sum(pop)) %>%
+  mutate(disb_rate=disb_pop / pop * 100) %>%
+  filter(stabbr=="AL") 
+
+```
+
+```{r lf_age}
+# adult dependency ratio
+lf_age <- readRDS(here::here("data", "lf_age.rds"))
+precis2(lf_age)
+count(lf_age, group_code, group)
+
+df2 <- lf_age %>%
+  mutate(youngold=ifelse(group_code <25, "young", "old")) %>%
+  group_by(year, stabbr, youngold) %>%
+  summarise_at(vars(civnipop, civlf, civemp), ~sum(., na.rm=TRUE)) %>%
+  group_by(year, stabbr) %>%
+  mutate(nilf=civnipop - civlf,
+         totpop=sum(civnipop), # total population of all age groups in the data (16+)
+         totlf=sum(civlf), # total civilian labor force of all age groups in the data (16+)
+         adr=nilf / totlf * 100) %>% # dependends (nilf) of each age group vs total labor force
+  ungroup
+df2
+
+# which states had big changes in the adr for 65+
+
+```
+
+```{r lf_total}
+lftot <- readRDS(here::here("data", "lf_total.rds"))
+```
 
 
 
