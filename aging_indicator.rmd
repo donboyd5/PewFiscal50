@@ -328,7 +328,6 @@ saveRDS(df2, file=here::here("data", "usmdb.rds"))
 ```
 
 ```{r ONETIME_ACS_disability}
-# ACS disability ----
 # https://www.census.gov/programs-surveys/acs/technical-documentation/pums/documentation.html
 
 dbdir <- "D:/Data/CensusACS/RSQLite1YearDB/"
@@ -544,17 +543,17 @@ precis2(usmdb)
 
 ```
 
-```{r acsdb}
+```{r acs_disb}
 # ACS disability data
-acsdb <- readRDS(here::here("data", "age_disb.rds"))
-glimpse(acsdb)
-precis2(acsdb)
-summary(acsdb)
-ht(acsdb)
+acs_disb <- readRDS(here::here("data", "age_disb.rds"))
+glimpse(acs_disb)
+precis2(acs_disb)
+summary(acs_disb)
+ht(acs_disb)
 # get total rates of disability
 # igq is institutionalized group quarters
 
-# acsdb %>%
+# acs_disb %>%
 #   filter(!igq) %>%
 #   group_by(year, stabbr) %>%
 #   summarise(n=sum(n), disb_pop=sum(pop * (dis==1)), pop=sum(pop)) %>%
@@ -577,7 +576,8 @@ lftot <- readRDS(here::here("data", "lf_total.rds"))
 glimpse(lftot)
 ```
 
-## calc measures
+
+## Calculate measures
 
 
 ```{r agedep_measures}
@@ -602,7 +602,7 @@ adr_l <- age_depratio %>%
 ```
 
 
-```{r life_expect_measures}
+```{r life_expectancy_measures}
 #.. life expectancy at age 65 and 85 ----
 le_l <- usmdb %>%
   filter(age %in% c(65, 85)) %>%
@@ -612,6 +612,7 @@ le_l <- usmdb %>%
   select(year, stabbr, name, value=ex)
 
 ```
+
 
 ```{r rle_measures}
 # create lowest common denominator file
@@ -647,10 +648,7 @@ rle_l <- rle %>%
   mutate(name="rle15") %>%
   select(stabbr, year, name, value=rle_age)
 
-
-
 ```
-
 
 ```{r rle_pop_measures}
 # what fraction of the working-age population has rle <= cutoff?
@@ -691,7 +689,6 @@ pop_rle_l <- pop_rle2 %>%
 ```
 
 
-
 ```{r lf_measures}
 oalfdr <- lf_age %>%
   mutate(youngold=ifelse(group_code <25, "young", "old")) %>%
@@ -712,11 +709,48 @@ oalfdr_l <- oalfdr %>%
 
 ```
 
+```{r disb_measures}
+glimpse(acs_disb)
+precis2(acs_disb)
+summary(acs_disb)
+ht(acs_disb)
+# get total rates of disability
+# igq is institutionalized group quarters - I KEEP THESE
 
-```{r rle_measures}
+disb2 <- acs_disb %>%
+  # filter(!igq) %>% # do not drop group quarters
+  group_by(year, stabbr) %>%
+  summarise(tot_pop=sum(pop),
+            disb_pop=sum(pop * (dis==1)),
+            old_pop=sum(pop * (agroup=="old")),
+            old_disb_pop=sum(pop * (agroup=="old") * (dis==1)),
+            work_pop=sum(pop * (agroup=="workage"))) %>%
+  mutate(disb_rate=disb_pop / tot_pop * 100,
+         old_rate=old_pop / tot_pop * 100,
+         old_disb_rate=old_disb_pop / tot_pop * 100,
+         old_rate_wp=old_pop / work_pop * 100,
+         old_disb_rate_wp=old_disb_pop / work_pop * 100)
+disb2 %>%
+  filter(stabbr=="NY")
+
+disb2 %>%
+  filter(stabbr %in% c("WV", "NY")) %>%
+  select(year, stabbr, contains("_wp")) %>%
+  pivot_longer(cols=contains("rate")) %>%
+  ggplot(aes(year, value, colour=stabbr)) + 
+  geom_line() +
+  geom_point() +
+  # scale_y_continuous(breaks=seq(0, 20, .25)) +
+  facet_wrap(~name, ncol=1, scales="free")
+
+disb_l <- disb2 %>%
+  select(stabbr, year, contains("rate")) %>%
+  pivot_longer(cols=contains("rate"))
 
 
 ```
+
+
 
 ```{r meas_xwalk}
 xwalk <- tribble(
@@ -728,7 +762,12 @@ xwalk <- tribble(
   "rle15", "Age at which remaining life expectancy is 15 years", NA, NA, NA,
   "oalfdr", "Old age labor force dependency ratio", "Older population (65+) NOT in labor force", "Working-age labor force (20-64)", "aka ADR",
   "rlepct_pop", "Population RLE < 15 as % of total population", NA, NA, NA,
-  "rlepct_work", "Population RLE < 15 as % of working-age population (21-RLE)", NA, NA, NA
+  "rlepct_work", "Population RLE < 15 as % of working-age population (21-RLE)", NA, NA, NA,
+  "disb_rate", "Disabled population as % of total population", NA, NA, NA,
+  "old_rate", "Old (65+) population as % of total population", NA, NA, NA,
+  "old_disb_rate", "Old (65+) plus disabled population as % of total population", NA, NA, NA,
+  "old_rate_wp", "Old (65+) population as % of working age (21-64) population", NA, NA, NA,
+  "old_disb_rate_wp", "Old (65+) plus disabled population as % of working age (21-64) population", NA, NA, NA
   )
 xwalk
 
@@ -741,7 +780,8 @@ stack <- bind_rows(adr_l,
                    le_l,
                    rle_l,
                    oalfdr_l,
-                   pop_rle_l) %>%
+                   pop_rle_l,
+                   disb_l) %>%
   left_join(xwalk, by = "name")
 
 count(stack, name, desc, num, den)
