@@ -37,8 +37,19 @@ knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE)
 ```
 
 ```{r globals, include=FALSE}
+globals <- list()
+resdir <- "results/aging/"
+globals$resdir <- here::here(resdir) # results directory
+globals$sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
+
+# fig widths
+#  map 16 x 9
+#  other 10 x 10
+
+# (resdir <- here::here("results/aging/")) # results directory
+
 # 11 states with diverse economies and tax structures
-sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
+# sts <- c("CA", "CT", "FL", "IL", "NJ", "NY", "PA", "TN", "TX", "WA", "WY")
 
 # colors lighter to darker
 # #fee0d2 #fc9272 #de2d26
@@ -103,7 +114,7 @@ ma_db <- function(x, period) {
 }
 
 stname <- function(stabbr) {state.name[match(stabbr, state.abb)]}
-stname(sts) # sts defined above
+stname(globals$sts) # sts defined above
 
 get_stabbr <- function(x){bdata::stcodes$stabbr[match(x, bdata::stcodes$stfips)]}
 
@@ -496,10 +507,12 @@ pop <- readRDS(here::here("data", "popagesex.rds")) %>%
   filter(vtype=="pop", src=="est", sex==0, month==7) %>%
   select(stabbr, year, age, value)
 glimpse(pop)
-pop %>%
-  filter(stabbr=="NY", age==999)
-pop %>%
-  filter(stabbr=="NY", year==2010)
+summary(pop)
+# pop %>%
+#   filter(stabbr=="NY", age==999)
+
+# pop %>%
+#   filter(stabbr=="NY", year==2010)
 ```
 
 ```{r usmdb}
@@ -507,27 +520,27 @@ usmdb <- readRDS(file=here::here("data", "usmdb.rds"))
 precis2(usmdb)
 # %>% filter(age==65)
 
-yrs <- c(2000, 2017)
-usmdb %>%
-  filter(age==65, year %in% yrs) %>%
-  select(stabbr, year, ex) %>%
-  pivot_wider(names_from = year, values_from = ex) %>%
-  # mutate(diff=`2017` - `1959`) %>%
-  mutate(diff=.[[3]] - .[[2]]) %>%
-  arrange(-diff)
+# yrs <- c(2000, 2017)
+# usmdb %>%
+#   filter(age==65, year %in% yrs) %>%
+#   select(stabbr, year, ex) %>%
+#   pivot_wider(names_from = year, values_from = ex) %>%
+#   # mutate(diff=`2017` - `1959`) %>%
+#   mutate(diff=.[[3]] - .[[2]]) %>%
+#   arrange(-diff)
 
-sts <- c("NY", "HI", "OK", "MS")
-atage <- 65
-usmdb %>%
-  filter(age==atage) %>%
-  filter(stabbr %in% sts) %>%
-  ggplot(aes(year, ex, colour=stabbr)) +
-  geom_line() +
-  geom_point() +
-  ggtitle(paste0("Life expectancy at age ", atage, ", selected states")) +
-  scale_x_continuous(name=NULL, breaks=seq(1950, 2030, 5)) +
-  scale_y_continuous(name="Life expectancy", breaks=seq(0, 30, 1)) +
-  theme_bw()
+# sts <- c("NY", "HI", "OK", "MS")
+# atage <- 65
+# usmdb %>%
+#   filter(age==atage) %>%
+#   filter(stabbr %in% sts) %>%
+#   ggplot(aes(year, ex, colour=stabbr)) +
+#   geom_line() +
+#   geom_point() +
+#   ggtitle(paste0("Life expectancy at age ", atage, ", selected states")) +
+#   scale_x_continuous(name=NULL, breaks=seq(1950, 2030, 5)) +
+#   scale_y_continuous(name="Life expectancy", breaks=seq(0, 30, 1)) +
+#   theme_bw()
 
 ```
 
@@ -536,25 +549,151 @@ usmdb %>%
 acsdb <- readRDS(here::here("data", "age_disb.rds"))
 glimpse(acsdb)
 precis2(acsdb)
+summary(acsdb)
+ht(acsdb)
 # get total rates of disability
 # igq is institutionalized group quarters
 
-acsdb %>%
-  filter(!igq) %>%
-  group_by(year, stabbr) %>%
-  summarise(n=sum(n), disb_pop=sum(pop * (dis==1)), pop=sum(pop)) %>%
-  mutate(disb_rate=disb_pop / pop * 100) %>%
-  filter(stabbr=="AL") 
+# acsdb %>%
+#   filter(!igq) %>%
+#   group_by(year, stabbr) %>%
+#   summarise(n=sum(n), disb_pop=sum(pop * (dis==1)), pop=sum(pop)) %>%
+#   mutate(disb_rate=disb_pop / pop * 100) %>%
+#   filter(stabbr=="NY") 
 
 ```
 
 ```{r lf_age}
 # adult dependency ratio
 lf_age <- readRDS(here::here("data", "lf_age.rds"))
-precis2(lf_age)
-count(lf_age, group_code, group)
+# glimpse(lf_age)
+# precis2(lf_age)
+# count(lf_age, group_code, group)
 
-df2 <- lf_age %>%
+```
+
+```{r lf_total}
+lftot <- readRDS(here::here("data", "lf_total.rds"))
+glimpse(lftot)
+```
+
+## calc measures
+
+
+```{r agedep_measures}
+#.. age dep population ratios ----
+age_depratio <- pop %>%
+  filter(age < 999) %>%
+  mutate(agroup=case_when(age < 21 ~ "young",
+                          age >=65 ~ "old",
+                          TRUE ~ "workage"),
+         agroup=factor(agroup, levels=c("young", "workage", "old"))) %>%
+  group_by(year, stabbr, agroup) %>%
+  summarise(value=sum(value)) %>%
+  pivot_wider(names_from = agroup) %>%
+  ungroup %>%
+  mutate(oadr=old / workage * 100,
+         tdr=(old + young) / workage * 100)
+
+adr_l <- age_depratio %>%
+  select(year, stabbr, oadr, tdr) %>%
+  pivot_longer(-c(year, stabbr))
+
+```
+
+
+```{r life_expect_measures}
+#.. life expectancy at age 65 and 85 ----
+le_l <- usmdb %>%
+  filter(age %in% c(65, 85)) %>%
+  mutate(name=case_when(age==65 ~ "le65",
+                        age==85 ~ "le85",
+                        TRUE ~ "error")) %>%
+  select(year, stabbr, name, value=ex)
+
+```
+
+```{r rle_measures}
+# create lowest common denominator file
+# determine the (non-integer) age at which people are expected to have 15 (or whatever) or more years left
+# get rle15- by interpolation
+rle_cut <- 15 # number of years expected to remain
+rle <- usmdb %>%
+  arrange(stabbr, year, ex) %>%
+  group_by(stabbr, year) %>%
+  mutate(xmin=min(which(ex > rle_cut)),
+         xmax=max(which(ex < rle_cut))) %>%
+  filter(row_number() %in% c(xmin[1], xmax[1])) %>%
+  select(stabbr, year, age, ex) %>%
+  group_by(stabbr, year) %>%
+  arrange(age) %>%
+  mutate(obsnum=row_number()) %>%
+  ungroup %>%
+  pivot_wider(names_from=obsnum, values_from = c(age, ex)) %>%
+  mutate(rle_cut=rle_cut,
+         rle_age=age_1 + (ex_1 - rle_age) / (ex_1 - ex_2))
+rle
+
+rle %>% filter(stabbr=="NY")
+
+rle %>% 
+  filter(stabbr %in% c("AL", "NY")) %>%
+  filter(year >= 2000) %>%
+  ggplot(aes(year, rle_age, colour=stabbr)) +
+  geom_line() +
+  geom_point()
+
+rle_l <- rle %>%
+  mutate(name="rle15") %>%
+  select(stabbr, year, name, value=rle_age)
+
+
+
+```
+
+
+```{r rle_pop_measures}
+# what fraction of the working-age population has rle <= cutoff?
+rle
+pop
+
+pop_rle <- pop %>%
+  rename(pop=value) %>%
+  filter(age != 999, stabbr != "US") %>%
+  left_join(rle %>% select(c(stabbr, year, rle_age)), by = c("stabbr", "year")) %>%
+  filter(!is.na(rle_age)) %>%
+  arrange(stabbr, year, age) %>%
+  # compute portion above the rle_age
+  mutate(share_gtrle=pmax((age + 1) - rle_age, 0) %>% pmin(., 1),
+         pop_gtrle=share_gtrle * pop,
+         pop_ltrle=pop - pop_gtrle)
+summary(pop_rle)
+ht(pop_rle)
+
+pop_rle2 <- pop_rle %>%
+  group_by(stabbr, year) %>%
+  summarise(pop_tot=sum(pop),
+            young_pop=sum((age < 21) * pop),
+            work_pop=sum((age>=21) * pop_ltrle),
+            rle_pop=sum(pop_gtrle)) %>%
+  mutate(checksum=young_pop + work_pop + rle_pop,
+         check=checksum - pop_tot)
+glimpse(pop_rle2)
+pop_rle2 %>% filter(stabbr=="NY")
+summary(pop_rle2)
+
+pop_rle_l <- pop_rle2 %>%
+  mutate(rlepct_pop=rle_pop / pop_tot * 100,
+         rlepct_work=rle_pop / work_pop * 100) %>%
+  select(stabbr, year, contains("pct")) %>%
+  pivot_longer(cols=contains("pct"))
+
+```
+
+
+
+```{r lf_measures}
+oalfdr <- lf_age %>%
   mutate(youngold=ifelse(group_code <25, "young", "old")) %>%
   group_by(year, stabbr, youngold) %>%
   summarise_at(vars(civnipop, civlf, civemp), ~sum(., na.rm=TRUE)) %>%
@@ -562,18 +701,159 @@ df2 <- lf_age %>%
   mutate(nilf=civnipop - civlf,
          totpop=sum(civnipop), # total population of all age groups in the data (16+)
          totlf=sum(civlf), # total civilian labor force of all age groups in the data (16+)
-         adr=nilf / totlf * 100) %>% # dependends (nilf) of each age group vs total labor force
+         nilfratio=nilf / totlf * 100) %>% # dependents (nilf) of each age group vs total labor force
   ungroup
-df2
 
-# which states had big changes in the adr for 65+
+oalfdr_l <- oalfdr %>%
+  filter(youngold=="old") %>%
+  mutate(name="oalfdr") %>%
+  select(year, stabbr, name, value=nilfratio)
+
 
 ```
 
-```{r lf_total}
-lftot <- readRDS(here::here("data", "lf_total.rds"))
+
+```{r rle_measures}
+
+
 ```
 
+```{r meas_xwalk}
+xwalk <- tribble(
+  ~name, ~desc, ~num, ~den, ~note,
+  "oadr", "Old age dependency ratio", "Older population (65+)", "Working age population (21-64)", NA,
+  "tdr", "Total dependency ratio", "Older plus younger population (65+ plus age < 21)", "Working age population (21-64)", NA,
+  "le65", "Life expectancy at age 65", NA, NA, NA,
+  "le85", "Life expectancy at age 85", NA, NA, NA,
+  "rle15", "Age at which remaining life expectancy is 15 years", NA, NA, NA,
+  "oalfdr", "Old age labor force dependency ratio", "Older population (65+) NOT in labor force", "Working-age labor force (20-64)", "aka ADR",
+  "rlepct_pop", "Population RLE < 15 as % of total population", NA, NA, NA,
+  "rlepct_work", "Population RLE < 15 as % of working-age population (21-RLE)", NA, NA, NA
+  )
+xwalk
+
+```
+
+
+## stack measures
+```{r}
+stack <- bind_rows(adr_l,
+                   le_l,
+                   rle_l,
+                   oalfdr_l,
+                   pop_rle_l) %>%
+  left_join(xwalk, by = "name")
+
+count(stack, name, desc, num, den)
+
+```
+
+
+# Explore stacked file
+```{r vs_oadr}
+st <- "AL"
+p <- stack %>%
+  filter(stabbr==st, name %in% c("oadr", "oalfdr")) %>%
+  ggplot(aes(year, value, colour=name)) +
+  geom_line() +
+  geom_point()
+p
+
+st <- "AL"
+p <- stack %>%
+  filter(stabbr==st, name %in% c("oadr", "rlepct_work")) %>%
+  ggplot(aes(year, value, colour=name)) +
+  geom_line() +
+  geom_point()
+p
+
+```
+
+
+
+
+# Measures
+## Age dependency ratios
+```{r age_dep}
+#.. age dep population ratios ----
+agedr <- pop %>%
+  filter(age < 999) %>%
+  mutate(agroup=case_when(age < 21 ~ "young",
+                          age >=65 ~ "old",
+                          TRUE ~ "workage"),
+         agroup=factor(agroup, levels=c("young", "workage", "old"))) %>%
+  group_by(year, stabbr, agroup) %>%
+  summarise(value=sum(value)) %>%
+  pivot_wider(names_from = agroup) %>%
+  ungroup %>%
+  mutate(oadr=old / workage * 100,
+         tdr=(old + young) / workage * 100)
+
+agedr %>%
+  filter(year==max(year), stabbr %in% c("US", state.abb)) %>%
+  arrange(-oadr)
+
+odr_hi <- c("FL", "ME")
+odr_lo <- c("CO", "TX")
+
+sts <- c(odr_hi, odr_lo)
+
+sts <- c("FL", "ME", "WV", "CO", "TX", "UT")
+
+sts <- c("CO", "FL", "HI", "ME", "MS", "NY", "TX", "WV")
+p <- agedr %>%
+  filter(stabbr %in% sts) %>%
+  ggplot(aes(year, oadr, colour=stabbr)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0) + 
+  scale_y_continuous("Percent", breaks=seq(0, 50, 2)) +
+  scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 2)) +
+  ggtitle("Old-age dependency ratio, selected states",
+          subtitle="Population 65+ as % of working-age population aged 21-64") +
+  theme_bw() +
+  theme(legend.title = element_blank())
+p
+ggsave(here::here(resdir, "oadr.png"), plot=p, width=10, height=8, scale=1)  
+
+
+agedr %>%
+  filter(stabbr %in% sts) %>%
+  ggplot(aes(year, tdr, colour=stabbr)) +
+  geom_line() +
+  geom_point()
+
+agedr %>%
+  select(year, stabbr, oadr, tdr) %>%
+  pivot_longer(cols=c(oadr, tdr), values_to = "state", names_to = "measure") %>%
+  group_by(year, measure) %>%
+  mutate(us=state[stabbr=="US"]) %>%
+  pivot_longer(cols=c(state, us)) %>%
+  filter(stabbr %in% sts) %>%
+  ggplot(aes(year, value, colour=name)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~measure+stabbr, nrow=2, scales="free")
+
+agedr_vus <- agedr %>%
+  select(year, stabbr, oadr, tdr) %>%
+  pivot_longer(cols=c(oadr, tdr), values_to = "state", names_to = "measure") %>%
+  group_by(year, measure) %>%
+  mutate(us=state[stabbr=="US"]) %>%
+  pivot_longer(cols=c(state, us))
+
+agedr_vus %>%
+  filter(stabbr %in% sts, measure=="oadr") %>%
+  ggplot(aes(year, value, colour=name)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~stabbr, scales="fixed")
+  
+
+# ggsave(here::here("results", "rqtax_v_trend.png"), plot=p, width=10, height=10, scale=1)  
+
+
+```
 
 
 # OLD STUFF BELOW HERE
