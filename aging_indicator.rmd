@@ -681,21 +681,6 @@ pop_rle_l <- pop_rle2 %>%
   pivot_longer(cols=contains("pct"))
 glimpse(pop_rle_l)
 
-# p <- pop_rle_l %>% 
-#   filter(stabbr %in% c("MS", "NY")) %>%
-#   filter(year >= 1990, name=="rlepct_work") %>%
-#   ggplot(aes(year, value, colour=stabbr)) +
-#   geom_line() +
-#   geom_point() +
-#   scale_colour_manual(values=c("red", "blue")) +
-#   scale_y_continuous(name="Age") +
-#   scale_x_continuous(name=NULL, breaks=seq(1950, 2020, 5)) +
-#   ggtitle("Age at which remaining life expectancy is 15 years or less") +
-#   guides(colour=guide_legend(title=NULL)) +
-#   theme_bw()
-# p
-
-
 ```
 
 
@@ -804,18 +789,10 @@ stack %>%
 
 ```
 
-# for memo
+# For memo
 ```{r}
 glimpse(stack)
 count(stack, name, num, den)
-
-# stackst <- "AL"
-# p <- stack %>%
-#   filter(stabbr==st, name %in% c("oadr", "oalfdr")) %>%
-#   ggplot(aes(year, value, colour=name)) +
-#   geom_line() +
-#   geom_point()
-# p
 
 ```
 
@@ -962,56 +939,11 @@ stack %>%
   filter(stabbr %in% c("AL", "CA", "CO", "FL", "ME", "NY", "WV")) %>%
   pivot_wider(names_from = stabbr, values_from = rank)
   
-
-  
-# yrs <- c(2000, 2017)
-# usmdb %>%
-#   filter(age==65, year %in% yrs) %>%
-#   select(stabbr, year, ex) %>%
-#   pivot_wider(names_from = year, values_from = ex) %>%
-#   # mutate(diff=`2017` - `1959`) %>%
-#   mutate(diff=.[[3]] - .[[2]]) %>%
-#   arrange(-diff)  
-
-# sts <- c("CO", "FL", "HI", "ME", "MS", "NY", "TX", "WV")
-# p <- agedr %>%
-#   filter(stabbr %in% sts) %>%
-#   ggplot(aes(year, oadr, colour=stabbr)) +
-#   geom_line() +
-#   geom_point() +
-#   geom_hline(yintercept = 0) + 
-#   scale_y_continuous("Percent", breaks=seq(0, 50, 2)) +
-#   scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 2)) +
-#   ggtitle("Old-age dependency ratio, selected states",
-#           subtitle="Population 65+ as % of working-age population aged 21-64") +
-#   theme_bw() +
-#   theme(legend.title = element_blank())
-# p
-# ggsave(here::here(resdir, "oadr.png"), plot=p, width=10, height=8, scale=1)    
-  
 ```
 
 ## Inactive old Koettl
 ```{r}
-stack %>%
-  filter(name=="oalfdr", stabbr %in% c("MS", "NY")) %>%
-  ggplot(aes(year, value, colour=stabbr)) +
-  geom_line() +
-  geom_point()
-  
-p <- df3 %>%
-  filter(youngold=="old") %>%
-  filter(stabbr %in% c("WV", "SC", "MA", "UT")) %>%
-  ggplot(aes(year, adr, colour=stabbr)) +
-  geom_line() +
-  geom_point() +
-  scale_y_continuous(name="Adult 65+ dependency ratio", breaks=seq(0, 50, 5), limits=c(0, NA)) +
-  scale_x_continuous(name=NULL, breaks=seq(2000, 2020, 2)) +
-  geom_hline(yintercept = 0) +
-  ggtitle("Inactive old (age 65+, not in labor force) as % of Active adults (age 20+, in labor force)",
-          subtitle="Two states with high dependency ratios (SC and WV), and two with low ratios (MA and UT)") +
-  theme_bw()
-p
+
 ```
 
 
