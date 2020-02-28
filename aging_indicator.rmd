@@ -746,6 +746,34 @@ disb_l <- disb2 %>%
 ```
 
 
+```{r gdp}
+count(pop, age) %>% ht
+oldpop <- pop %>%
+  filter(age %in% 65:85, stabbr != "US") %>%
+  group_by(stabbr, year) %>%
+  summarise(oldpop=sum(value))
+oldpop %>% filter(stabbr=="NY")
+
+# state gdp
+library("BEAData")
+data(package="BEAData")
+glimpse(sgdp.a)
+sgdp.a %>% filter(stabbr=="US")
+
+gdp_l <- sgdp.a %>%
+  filter(year >= 2010) %>%
+  left_join(oldpop, by = c("stabbr", "year")) %>%
+  mutate(rgdp=rgdp * 1e6, # dollars
+         value=oldpop / (rgdp / 1e6), # old people per $m gdp
+         name="oap_rgdp") %>%
+  select(year, stabbr, name, value)
+
+gdp_l %>% filter(stabbr=="NY")
+
+
+```
+
+
 
 ```{r meas_xwalk}
 xwalk <- tribble(
@@ -762,7 +790,8 @@ xwalk <- tribble(
   "old_rate", "Old (65+) population as % of total population", NA, NA, NA, 1,
   "old_disb_rate", "Old (65+) plus disabled population as % of total population", NA, NA, NA, 1,
   "old_rate_wp", "Old (65+) population as % of working age (21-64) population", NA, NA, NA, 1,
-  "old_disb_rate_wp", "Old (65+) plus disabled population as % of working age (21-64) population", NA, NA, NA, 1
+  "old_disb_rate_wp", "Old (65+) plus disabled population as % of working age (21-64) population", NA, NA, NA, 1,
+  "oap_rgdp", "Old (65+) population per $m gdp", NA, NA, NA, 1
   )
 xwalk
 
@@ -776,7 +805,8 @@ stack <- bind_rows(adr_l,
                    rle_l,
                    oalfdr_l,
                    pop_rle_l,
-                   disb_l) %>%
+                   disb_l,
+                   gdp_l) %>%
   left_join(xwalk, by = "name") %>%
   filter(!stabbr %in% c("DC", "US", "PR"))
 
@@ -890,6 +920,31 @@ ggsave(here::here("results", "aging", "MS_NY_OADR_vs_OALFDR.png"), plot=p, width
 
 ```
 
+### OADR and OAP_RGDP$m
+```{r}
+lab1 <- "Old age dependency ratio using chronolgical age cutoff (age 65+)"
+lab2 <- "# of older people (65+) per $ milion of real GDP"
+
+p <- stack %>%
+  filter(name %in% c("oadr", "oap_rgdp"), stabbr %in% c("MS", "NY")) %>%
+  filter(year>=2010) %>%
+  mutate(name=factor(name, 
+                     levels=c("oadr", "oap_rgdp"),
+                     labels=c(lab1, lab2))) %>%
+  ggplot(aes(year, value, colour=stabbr)) +
+  geom_line(size=1) +
+  geom_point() +
+  scale_colour_manual(values=c("red", "blue")) +
+  scale_y_continuous(name="%", breaks=seq(0, 30, .5), limits = c(NA, NA)) +
+  scale_x_continuous(name=NULL) +
+  facet_wrap(~name, scales="free") +
+  ggtitle("Old age dependent ratio compared to # of older people per $ million GDP") +
+  guides(colour=guide_legend(title=NULL)) +
+  theme_bw()
+p
+ggsave(here::here("results", "aging", "MS_NY_OADR_vs_OAPRGDPM.png"), plot=p, width=10, height=6, scale=1)  
+
+```
 
 
 # Explore stacked file
